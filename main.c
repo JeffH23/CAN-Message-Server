@@ -19,37 +19,6 @@
 
 #define MAX_CONNECTIONS 5
 
-//int TCP_init(){
-    /*TCP listener socket setup*/
-/*    struct sockaddr_in InternetSockAddr;
-    InternetSockAddr.sin_family = AF_INET;
-    InternetSockAddr.sin_port = htons(8080);
-    InternetSockAddr.sin_addr.s_addr = INADDR_ANY; //listens for connections from any IP address
-
-    int InternetSocketfd = socket(AF_INET, SOCK_STREAM, 0);
-    if(InternetSocketfd == -1){
-        int errval = errno;
-        printf("Look Here --> int InternetSocketFD = socket()\n");
-        printf("%s\n",strerror(errval));
-        return -1;
-    }
-
-    if(bind(InternetSocketfd, (const struct sockaddr *) &InternetSockAddr, sizeof(InternetSockAddr)) == -1){
-        int errval = errno;
-        printf("Binding error:\n");
-        printf("%i: %s\n", errval, strerror(errval));
-        return -1;
-    }
-
-    if(listen(InternetSocketfd,5) !=0){
-        int errval = errno;
-        printf("listen() error:\n");
-        printf("%i: %s\n", errval, strerror(errval));
-        return 1;
-    }
-}*/
-
-
 struct Connection
 {
     int fd;
@@ -113,6 +82,44 @@ int handle_connections(int* TCP_listener_socket,struct Connection* connections,i
         return 0;
 }
 
+int CAN_message_handler(int* CAN_socket_fd,struct Connection* connections){
+        /*read from bound CAN socket*/
+        int can_nbytes;
+        int CANSendBuffSize = 50;
+        char CANSendBuff[CANSendBuffSize];
+        int CANBuffOffset = 0;
+        struct can_frame frame;
+
+        for(int i=0; i<100; i++){
+            CANBuffOffset = 0;
+            can_nbytes = read(*CAN_socket_fd, &frame, sizeof(struct can_frame));
+            if(can_nbytes<0){
+                perror("CAN frame read error");
+                return -1;
+            }
+
+            CANBuffOffset += snprintf(CANSendBuff + CANBuffOffset, CANSendBuffSize - CANBuffOffset, "ID: 0x%03X Data: ", frame.can_id);
+
+            for(int j=0; j<frame.can_dlc; j++){
+                CANBuffOffset += snprintf(CANSendBuff + CANBuffOffset, CANSendBuffSize - CANBuffOffset,"%02X ", frame.data[j]);
+                //printf("%02X ", frame.data[j]);
+            }
+
+            CANBuffOffset += snprintf(CANSendBuff + CANBuffOffset, CANBuffOffset, "  __  \r");
+            //printf("Bytes:%i, Frame: %s",offset, CANSendBuff);
+
+            /*Send CAN frames to CliSockFD*/
+        
+            if(send(connections[0].fd, CANSendBuff,/* CANSendBuffSize - */CANBuffOffset, 0) < 0){
+            int errval = errno;
+            printf("CliSockFD CANBuff send error:\n");
+            printf("%i: %s\n", errval, strerror(errval));
+            return -1;
+            }
+            printf("%.*s\n",CANBuffOffset,CANSendBuff);
+        }
+}
+
 int main(){
     /*load a index.html*/
     const char *indexHTMLPath = "index.html";
@@ -145,7 +152,6 @@ int main(){
     printf("HTML file is %i bytes long\n",file_info.st_size);
 
     /*TCP listener socket setup*/
-//    TCP_Listener = TCP_init();
     struct sockaddr_in InternetSockAddr;
     InternetSockAddr.sin_family = AF_INET;
     InternetSockAddr.sin_port = htons(8080);
@@ -173,40 +179,6 @@ int main(){
         return 1;
     }
 
-    /*Accept TCP connection*/
-
-/*    struct sockaddr CliSock;
-    int CliSockAddrLen = sizeof(CliSock);
-    int CliSockFD = accept(InternetSocketfd,(struct sockaddr *)&CliSock, (socklen_t *)&CliSockAddrLen);
-    if(CliSockFD == -1){
-        int errval = errno;
-        printf("CliSockFD accept() error:\n");
-        printf("%i: %s\n", errval, strerror(errval));
-        return -1;
-    }*/
-    /*Open HTTP connection*/
-/*    int WebPageOpenBuffSize = 1024;
-    char WebPageOpenBuff[WebPageOpenBuffSize];
-    int WebPageoffset = 0;
-    WebPageoffset += snprintf(WebPageOpenBuff, WebPageOpenBuffSize,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        "Connection: keep-alive\r\n"
-        "\r\n");
-    if(send(CliSockFD, WebPageOpenBuff, WebPageoffset, 0) < 0){
-        printf("Send failed");
-        return -1;
-        }
- */   //printf("%.*c", WebPageOpenBuffSize - WebPageoffset, WebPageOpenBuff); // this was sending '@' for some reason
-
-    /*Lets try sending a html file*/
-/*    if(send(CliSockFD, HTMLFileBuff, file_info.st_size, 0) < 0){
-        int errval = errno;
-        printf("CliSockFD CANBuff send error:\n");
-        printf("%i: %s\n", errval, strerror(errval));
-        return -1;
-        }
-*/
     struct Connection connections[MAX_CONNECTIONS];
     int num_of_connections = 0;
 
@@ -214,64 +186,31 @@ int main(){
 
 
     /*CAN interface connection*/
-    int can_sockfd;
-    int can_nbytes;
+    int CAN_sockfd;
 
-    struct sockaddr_can sockaddr; //has members: sa_family_t can_family, int can_ifindex, and a union
+    struct sockaddr_can CANsockaddr; //has members: sa_family_t can_family, int can_ifindex, and a union
 
     struct ifreq ifr; //interface request variable
 
-    struct can_frame frame;
-
-    can_sockfd = socket(PF_CAN, SOCK_RAW, CAN_RAW);
-    if(can_sockfd<0){
+    CAN_sockfd = socket(PF_CAN, SOCK_RAW, CAN_RAW);
+    if(CAN_sockfd<0){
         perror("Error while opening socket");
         return -1;
     }
 
     strcpy(ifr.ifr_name, "vcan0"); //this copies "can0" to ifr.ifr_name. not sure why not just set ifr_name = "can0" just following orders
 
-    ioctl(can_sockfd, SIOCGIFINDEX, &ifr); // asks the system for the index of the interface who's name is in ifr.ifr_name
+    ioctl(CAN_sockfd, SIOCGIFINDEX, &ifr); // asks the system for the index of the interface who's name is in ifr.ifr_name
 
     /*Bind up that socket to the CAN interface baby!*/
-    sockaddr.can_family = AF_CAN;
-    sockaddr.can_ifindex = ifr.ifr_ifindex;
+    CANsockaddr.can_family = AF_CAN;
+    CANsockaddr.can_ifindex = ifr.ifr_ifindex;
 
-    if(bind(can_sockfd, (const struct sockaddr *) &sockaddr, sizeof(sockaddr)) == !0){
+    if(bind(CAN_sockfd, (const struct sockaddr *) &CANsockaddr, sizeof(struct sockaddr_can)) == !0){
         printf("bind failed");
         return -1;
     }
-    /*read from bound CAN socket*/
-    int CANSendBuffSize = 50;
-    char CANSendBuff[CANSendBuffSize];
-    int CANBuffOffset = 0;
-
-    for(int i=0; i<100; i++){
-        CANBuffOffset = 0;
-        can_nbytes = read(can_sockfd, &frame, sizeof(struct can_frame));
-        if(can_nbytes<0){
-            perror("CAN frame read error");
-            return -1;
-        }
-
-        CANBuffOffset += snprintf(CANSendBuff + CANBuffOffset, CANSendBuffSize - CANBuffOffset, "ID: 0x%03X Data: ", frame.can_id);
-
-        for(int j=0; j<frame.can_dlc; j++){
-            CANBuffOffset += snprintf(CANSendBuff + CANBuffOffset, CANSendBuffSize - CANBuffOffset,"%02X ", frame.data[j]);
-            //printf("%02X ", frame.data[j]);
-        }
-
-        CANBuffOffset += snprintf(CANSendBuff + CANBuffOffset, CANBuffOffset, "  __  \r");
-        //printf("Bytes:%i, Frame: %s",offset, CANSendBuff);
-
-        /*Send CAN frames to CliSockFD*/
-        
-        if(send(connections[0].fd, CANSendBuff,/* CANSendBuffSize - */CANBuffOffset, 0) < 0){
-        int errval = errno;
-        printf("CliSockFD CANBuff send error:\n");
-        printf("%i: %s\n", errval, strerror(errval));
-        return -1;
-        }
-        printf("%.*s\n",CANBuffOffset,CANSendBuff);
-    }
+    /*start the message handler*/
+    int CAN_handler = CAN_message_handler(&CAN_sockfd,connections);
+    return 0;
 }

@@ -17,7 +17,10 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
-#define MAX_CONNECTIONS 5
+/*threads*/
+#include <pthread.h>
+
+#define MAX_CONNECTIONS 3
 
 struct Connection
 {
@@ -26,6 +29,15 @@ struct Connection
     socklen_t fd_addr_length;
     char* options;
     int num_options;
+};
+
+struct threaded_func_args
+{
+    int* TCP_listener_socket;
+    struct Connection* connections;
+    int* num_of_connections;
+    void* HTMLFileBuff;
+    struct stat* HTML_File_Info;
 };
 
 int handle_connections(int* TCP_listener_socket,struct Connection* connections,int* num_of_connections,void* HTMLFileBuff,struct stat* HTML_File_Info){
@@ -50,14 +62,25 @@ int handle_connections(int* TCP_listener_socket,struct Connection* connections,i
     int WebPageOpenBuffSize = 1024;
     char WebPageOpenBuff[WebPageOpenBuffSize];
     int WebPageoffset = 0;
-        if(connection_num >= MAX_CONNECTIONS - 1){
+    if(connection_num >= MAX_CONNECTIONS - 1){
         printf("Connections at max. Not accepting new connections!!\n");
         WebPageoffset += snprintf(WebPageOpenBuff, WebPageOpenBuffSize,
         "HTTP/1.1 503 Service Unavalible\r\n"
-        "Content-Type: text/plain\r\n"
+        "Content-Type: text/plain charset=utf-8\r\n"
         "Server is at maximum connection limit. Please try again later."
         "\r\n");
-        return 2;
+        if(send(connections[connection_num].fd, WebPageOpenBuff, WebPageoffset, 0) < 0){
+            int errval = errno;
+            printf("HTML send error:\n");
+            printf("%i: %s\n", errval, strerror(errval));
+            return -1;
+        }
+        if(shutdown(connections[connection_num].fd, SHUT_RDWR) !=0){
+            printf("socket shutdown failed\n");
+            return -1;
+        }
+        connections[connection_num] = (struct Connection){0};
+        return 0;
     }
     WebPageoffset += snprintf(WebPageOpenBuff, WebPageOpenBuffSize,
         "HTTP/1.1 200 OK\r\n"
@@ -78,11 +101,11 @@ int handle_connections(int* TCP_listener_socket,struct Connection* connections,i
         printf("%i: %s\n", errval, strerror(errval));
         return -1;
         }
-        (*num_of_connections)++;
-        return 0;
+    (*num_of_connections)++;
+    return 0;
 }
 
-int CAN_message_handler(int* CAN_socket_fd,struct Connection* connections){
+int CAN_message_handler(int* CAN_socket_fd,struct Connection* connections,int* num_of_connections){
         /*read from bound CAN socket*/
         int can_nbytes;
         int CANSendBuffSize = 50;
@@ -90,7 +113,7 @@ int CAN_message_handler(int* CAN_socket_fd,struct Connection* connections){
         int CANBuffOffset = 0;
         struct can_frame frame;
 
-        for(int i=0; i<100; i++){
+        for(int i=0; i<1; i++){
             CANBuffOffset = 0;
             can_nbytes = read(*CAN_socket_fd, &frame, sizeof(struct can_frame));
             if(can_nbytes<0){
@@ -108,16 +131,26 @@ int CAN_message_handler(int* CAN_socket_fd,struct Connection* connections){
             CANBuffOffset += snprintf(CANSendBuff + CANBuffOffset, CANBuffOffset, "  __  \r");
             //printf("Bytes:%i, Frame: %s",offset, CANSendBuff);
 
-            /*Send CAN frames to CliSockFD*/
-        
-            if(send(connections[0].fd, CANSendBuff,/* CANSendBuffSize - */CANBuffOffset, 0) < 0){
+            /*Send CAN frames to all connections*/
+            for(int k=0; k<(*num_of_connections); k++){
+                if(send(connections[0].fd, CANSendBuff,/* CANSendBuffSize - */CANBuffOffset, 0) < 0){
             int errval = errno;
             printf("CliSockFD CANBuff send error:\n");
             printf("%i: %s\n", errval, strerror(errval));
             return -1;
             }
+            }
+            
             printf("%.*s\n",CANBuffOffset,CANSendBuff);
         }
+}
+
+void* connection_handler_threadfunc(void* args){
+    struct threaded_func_args my_args = *((struct threaded_func_args*)args);
+    while(1){
+        int c_handle = handle_connections(my_args.TCP_listener_socket,my_args.connections,my_args.num_of_connections,my_args.HTMLFileBuff,my_args.HTML_File_Info);
+    }
+    return NULL;
 }
 
 int main(){
@@ -181,9 +214,24 @@ int main(){
 
     struct Connection connections[MAX_CONNECTIONS];
     int num_of_connections = 0;
+    /*start my connection handling thread*/
+    struct threaded_func_args* threadedFuncArgs = malloc(sizeof(struct threaded_func_args));
+    if(!threadedFuncArgs){
+        printf("malloc error\n");
+        return 1;
+    }
+    threadedFuncArgs->TCP_listener_socket = &InternetSocketfd;
+    threadedFuncArgs->connections = connections;
+    threadedFuncArgs->num_of_connections = &num_of_connections;
+    threadedFuncArgs->HTMLFileBuff = HTMLFileBuff;
+    threadedFuncArgs->HTML_File_Info = &file_info;
 
-    int c_handle = handle_connections(&InternetSocketfd,connections,&num_of_connections,HTMLFileBuff,&file_info);
-
+    pthread_t thread;
+    if(pthread_create(&thread,NULL,connection_handler_threadfunc,(void*)threadedFuncArgs) !=0){
+        printf("thread creation error");
+        free(threadedFuncArgs);
+        return 1;
+    }
 
     /*CAN interface connection*/
     int CAN_sockfd;
@@ -211,6 +259,11 @@ int main(){
         return -1;
     }
     /*start the message handler*/
-    int CAN_handler = CAN_message_handler(&CAN_sockfd,connections);
+    while(1){
+        while(num_of_connections > 0){
+            int CAN_handler = CAN_message_handler(&CAN_sockfd,connections,&num_of_connections);
+            
+        }
+    }
     return 0;
 }

@@ -20,7 +20,7 @@
 /*threads*/
 #include <pthread.h>
 
-#define MAX_CONNECTIONS 3
+#define MAX_CONNECTIONS 5
 
 struct Connection
 {
@@ -55,14 +55,16 @@ int handle_connections(int* TCP_listener_socket,struct Connection* connections,i
         printf("connection.fd accept() error:\n");
         printf("%i: %s\n", errval, strerror(errval));
         return -1;
-    }
+    }else {
+    printf("Accepted client fd: %d, listening socket: %d\n", connection.fd, *TCP_listener_socket);
     connections[connection_num] = connection;
+}
 
     //send index.html
     int WebPageOpenBuffSize = 1024;
     char WebPageOpenBuff[WebPageOpenBuffSize];
     int WebPageoffset = 0;
-    if(connection_num >= MAX_CONNECTIONS - 1){
+    if(connection_num > MAX_CONNECTIONS - 2){//hopefully prevents us writing one past the end of connections[]
         printf("Connections at max. Not accepting new connections!!\n");
         WebPageoffset += snprintf(WebPageOpenBuff, WebPageOpenBuffSize,
         "HTTP/1.1 503 Service Unavalible\r\n"
@@ -79,7 +81,12 @@ int handle_connections(int* TCP_listener_socket,struct Connection* connections,i
             printf("socket shutdown failed\n");
             return -1;
         }
-        connections[connection_num] = (struct Connection){0};
+        if(close(connection.fd) !=0){
+            printf("close(connection) failed\n");
+            return -1;
+        }
+        struct Connection connection  = {0};
+        connections[connection_num] = connection;//(struct Connection){0};
         return 0;
     }
     WebPageoffset += snprintf(WebPageOpenBuff, WebPageOpenBuffSize,
@@ -141,7 +148,7 @@ int CAN_message_handler(int* CAN_socket_fd,struct Connection* connections,int* n
             }
             }
             
-            printf("%.*s\n",CANBuffOffset,CANSendBuff);
+            //printf("%.*s\n",CANBuffOffset,CANSendBuff);
         }
 }
 

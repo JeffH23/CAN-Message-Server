@@ -35,12 +35,20 @@ struct threaded_func_args
 {
     int* TCP_listener_socket;
     struct Connection* connections;
+    struct ConnectionList* connection_list;
     int* num_of_connections;
     void* HTMLFileBuff;
     struct stat* HTML_File_Info;
 };
 
-int handle_connections(int* TCP_listener_socket,struct Connection* connections,int* num_of_connections,void* HTMLFileBuff,struct stat* HTML_File_Info){
+struct ConnectionList
+{
+    struct Connection connection;
+    struct ConnectionList* NextNode;
+    int IsTail;
+};
+
+int handle_connections(int* TCP_listener_socket,struct Connection* connections,int* num_of_connections,void* HTMLFileBuff,struct stat* HTML_File_Info, struct ConnectionList* connection_list){
     //load a new socket endpoint and attatch it to connections[]
     int connection_num = *num_of_connections; // this will set our index to 1 if there is 1 element at connections[0]
     if(connection_num < 0){
@@ -55,10 +63,24 @@ int handle_connections(int* TCP_listener_socket,struct Connection* connections,i
         printf("connection.fd accept() error:\n");
         printf("%i: %s\n", errval, strerror(errval));
         return -1;
-    }else {
+    }
     printf("Accepted client fd: %d, listening socket: %d\n", connection.fd, *TCP_listener_socket);
     connections[connection_num] = connection;
-}
+
+    //new node for linked list
+    struct ConnectionList* current_connection_list_node = connection_list;
+    while(current_connection_list_node->NextNode != NULL){
+        current_connection_list_node = current_connection_list_node->NextNode;
+    }
+    struct ConnectionList* new_connection = malloc(sizeof(struct ConnectionList));
+    if(new_connection == NULL){
+        printf("Malloc Failed");
+        return -1;
+    }
+    new_connection->connection = connection;
+    new_connection->NextNode = NULL;
+    current_connection_list_node->NextNode = new_connection;
+
 
     //send index.html
     int WebPageOpenBuffSize = 1024;
@@ -155,7 +177,7 @@ int CAN_message_handler(int* CAN_socket_fd,struct Connection* connections,int* n
 void* connection_handler_threadfunc(void* args){
     struct threaded_func_args my_args = *((struct threaded_func_args*)args);
     while(1){
-        int c_handle = handle_connections(my_args.TCP_listener_socket,my_args.connections,my_args.num_of_connections,my_args.HTMLFileBuff,my_args.HTML_File_Info);
+        int c_handle = handle_connections(my_args.TCP_listener_socket,my_args.connections,my_args.num_of_connections,my_args.HTMLFileBuff,my_args.HTML_File_Info,my_args.connection_list);
     }
     return NULL;
 }
@@ -220,6 +242,7 @@ int main(){
     }
 
     struct Connection connections[MAX_CONNECTIONS];
+    struct ConnectionList connection_linked_list = {0};
     int num_of_connections = 0;
     /*start my connection handling thread*/
     struct threaded_func_args* threadedFuncArgs = malloc(sizeof(struct threaded_func_args));
@@ -229,6 +252,7 @@ int main(){
     }
     threadedFuncArgs->TCP_listener_socket = &InternetSocketfd;
     threadedFuncArgs->connections = connections;
+    threadedFuncArgs->connection_list = &connection_linked_list;
     threadedFuncArgs->num_of_connections = &num_of_connections;
     threadedFuncArgs->HTMLFileBuff = HTMLFileBuff;
     threadedFuncArgs->HTML_File_Info = &file_info;

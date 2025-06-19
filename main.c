@@ -99,14 +99,17 @@ int decode_options(char* receive_buffer,int receive_message_length){
     //decode requested options and return the number of that option
     //return 0 = raw TCP connection, 1 = load web page, 2 = expects ServerSentEvents, 3 = expects data for specific IDs(unimplemented)
     if(receive_message_length == 0){
+        printf("TCP\n");
         //raw TCP connection
         return 0;
     }
     if(memcmp(receive_buffer, "GET / ",6) == 0){
+        printf("Option 1: Serve Webpage\n");
         //we received a "GET / "
         return 1;
     }
     if(memcmp(receive_buffer, "GET /events",11) == 0){
+        printf("Option 2\n");
         //we received a "GET /events"
         return 2;
     }
@@ -163,6 +166,7 @@ int handle_connections(int* TCP_listener_socket,int* num_of_connections,void* HT
         return -1;
     }
     int connection_options = decode_options(receive_buffer, received_message_length);
+    current_connection_list_node->connection.options = connection_options;
 
     int WebPageOpenBuffSize = 1024;
     char WebPageOpenBuff[WebPageOpenBuffSize];
@@ -209,7 +213,8 @@ int handle_connections(int* TCP_listener_socket,int* num_of_connections,void* HT
         WebPageoffset += snprintf(WebPageOpenBuff, WebPageOpenBuffSize,
             "HTTP/1.1 200 OK\r\n"
             "Content-Type: text/html; charset=utf-8\r\n"
-            "Connection: keep-alive\r\n"
+            //"Connection: keep-alive\r\n"
+            //"Content-length: 3498"
             "\r\n");
         if(send(current_connection_list_node->connection.fd, WebPageOpenBuff, WebPageoffset, 0) < 0){
             int errval = errno;
@@ -227,6 +232,22 @@ int handle_connections(int* TCP_listener_socket,int* num_of_connections,void* HT
             printf("%i: %s\n", errval, strerror(errval));
             return -1;
         }
+        int ByeByeSocket = socket_cleanup(connection_list_head,current_connection_list_node->connection.fd,num_of_connections);
+    }
+    if(connection_options == 2){
+        WebPageoffset += snprintf(WebPageOpenBuff, WebPageOpenBuffSize,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/event-stream\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: keep-alive\r\n"
+            "\r\n");
+            if(send(current_connection_list_node->connection.fd,WebPageOpenBuff,WebPageoffset,0) < 0){
+                int errval = errno;
+                int ByeByeSocket = socket_cleanup(connection_list_head,current_connection_list_node->connection.fd,num_of_connections);
+                printf("SSE Header send error:\n");
+                printf("%i: %s\n", errval, strerror(errval));
+                return -1;
+            }
     }
     //increment the number of connections
     (*num_of_connections)++;
@@ -242,33 +263,48 @@ int CAN_message_handler(int* CAN_socket_fd,struct ConnectionList** connection_li
         struct can_frame frame;
 
         for(int i=0; i<1; i++){// useless for loop as long as main() calls in a while(1) loop
-            CANBuffOffset = 0;
             can_nbytes = read(*CAN_socket_fd, &frame, sizeof(struct can_frame));
             if(can_nbytes<0){
                 perror("CAN frame read error");
                 return -1;
             }
 
-            CANBuffOffset += snprintf(CANSendBuff + CANBuffOffset, CANSendBuffSize - CANBuffOffset, "ID: 0x%03X Data: ", frame.can_id);
+            CANBuffOffset += snprintf(CANSendBuff, CANSendBuffSize - CANBuffOffset, "ID: 0x%03X Data: ", frame.can_id);
 
             for(int j=0; j<frame.can_dlc; j++){
                 CANBuffOffset += snprintf(CANSendBuff + CANBuffOffset, CANSendBuffSize - CANBuffOffset,"%02X ", frame.data[j]);
                 //printf("%02X ", frame.data[j]);
             }
 
-            CANBuffOffset += snprintf(CANSendBuff + CANBuffOffset, CANBuffOffset, "  __  \r");
+            //CANBuffOffset += snprintf(CANSendBuff + CANBuffOffset, CANBuffOffset, "  __  \r\n");
             //printf("Bytes:%i, Frame: %s",offset, CANSendBuff);
 
             /*Send CAN frames to all connections*/
             struct ConnectionList* current_connection_list_node = *connection_list_head;
             for(int k=0; k<(*num_of_connections); k++){
-                if(send(current_connection_list_node->connection.fd, CANSendBuff,/* CANSendBuffSize - */CANBuffOffset, 0) < 0){
+                if(current_connection_list_node->connection.options == 0){// only send data to desired endpoints
+                    if(send(current_connection_list_node->connection.fd, CANSendBuff,CANBuffOffset, 0) < 0){
                     int errval = errno;
                     int ByeByeSocket = socket_cleanup(connection_list_head,current_connection_list_node->connection.fd,num_of_connections);
                     printf("CliSockFD CANBuff send error:\n");
                     printf("%i: %s\n", errval, strerror(errval));
                     return -1;
+                    }
                 }
+                if(current_connection_list_node->connection.options == 2){
+                    int SSEDataBuffSize = 100;
+                    char SSEData[SSEDataBuffSize];
+                    int rand_num = rand();
+                    int SSE_extra_offset = snprintf(SSEData, SSEDataBuffSize-CANBuffOffset, "event: message\ndata: %.*s\n\n", CANBuffOffset, CANSendBuff);
+                    if(send(current_connection_list_node->connection.fd, SSEData, CANBuffOffset + SSE_extra_offset, 0) < 0){//send SSE formated data
+                        int errval = errno;
+                        int ByeByeSocket = socket_cleanup(connection_list_head,current_connection_list_node->connection.fd,num_of_connections);
+                        printf("CliSockFD CANBuff send error:\n");
+                        printf("%i: %s\n", errval, strerror(errval));
+                        return -1;
+                        }
+                }
+
                 //procede to the next node in our linked list
                 if(current_connection_list_node->NextNode!=NULL){
                     current_connection_list_node = current_connection_list_node->NextNode;

@@ -72,8 +72,7 @@ int socket_cleanup(struct ConnectionList** connection_list_head,int fd,int* num_
         if((*connection_list_head)->NextNode == NULL){
             struct Connection connection = {0};
             (*connection_list_head)->connection = connection;
-        }
-        *connection_list_head = (*connection_list_head)->NextNode;
+        }else{*connection_list_head = (*connection_list_head)->NextNode;}
         return 0;
     }
     struct ConnectionList* current_node = (*connection_list_head)->NextNode;
@@ -291,12 +290,12 @@ int CAN_message_handler(int* CAN_socket_fd,struct ConnectionList** connection_li
                     return -1;
                     }
                 }
-                if(current_connection_list_node->connection.options == 2){
+                if(current_connection_list_node->connection.options == 2){//GET /events
                     int SSEDataBuffSize = 100;
                     char SSEData[SSEDataBuffSize];
-                    int rand_num = rand();
-                    int SSE_extra_offset = snprintf(SSEData, SSEDataBuffSize-CANBuffOffset, "event: message\ndata: %.*s\n\n", CANBuffOffset, CANSendBuff);
-                    if(send(current_connection_list_node->connection.fd, SSEData, CANBuffOffset + SSE_extra_offset, 0) < 0){//send SSE formated data
+                    int SSE_offset = snprintf(SSEData, SSEDataBuffSize, "event: message\ndata: %.*s\n\n", CANBuffOffset, CANSendBuff);
+                    printf("bytes in SSEData: %i :: CANBuffOfset %i\n",SSE_offset,CANBuffOffset);
+                    if(send(current_connection_list_node->connection.fd, SSEData,SSE_offset, 0) < 0){//send SSE formated data
                         int errval = errno;
                         int ByeByeSocket = socket_cleanup(connection_list_head,current_connection_list_node->connection.fd,num_of_connections);
                         printf("CliSockFD CANBuff send error:\n");
@@ -362,9 +361,16 @@ int main(){
     InternetSockAddr.sin_addr.s_addr = INADDR_ANY; //listens for connections from any IP address
 
     int InternetSocketfd = socket(AF_INET, SOCK_STREAM, 0);
-    if(InternetSocketfd == -1){
+    if(InternetSocketfd < 0){
         int errval = errno;
         printf("Look Here --> int InternetSocketFD = socket()\n");
+        printf("%s\n",strerror(errval));
+        return -1;
+    }
+    int socket_option_reuseaddr_val = 1;
+    if(setsockopt(InternetSocketfd,SOL_SOCKET, SO_REUSEADDR,&socket_option_reuseaddr_val,sizeof(int))){
+        int errval = errno;
+        printf("setsockopt() error\n");
         printf("%s\n",strerror(errval));
         return -1;
     }
@@ -391,7 +397,7 @@ int main(){
     int num_of_connections = 0;
     /*start my connection handling thread*/
     struct threaded_func_args* threadedFuncArgs = malloc(sizeof(struct threaded_func_args));
-    if(!threadedFuncArgs){
+    if(threadedFuncArgs == NULL){
         printf("malloc error\n");
         return 1;
     }
